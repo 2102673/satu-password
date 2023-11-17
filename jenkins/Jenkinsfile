@@ -1,0 +1,80 @@
+pipeline {
+    agent any
+    
+    stages {
+        stage('Clean Up') {
+            steps {
+                echo "Cleaning up..."
+                sh 'docker compose down webapp'
+                sh 'docker system prune -a -f'
+            }
+        }
+        
+        stage('Unit Test') {
+            steps {
+                echo 'Building test...'
+                sh 'docker compose build webapp --build-arg="ENV_VALUE=TEST" webapp'
+                echo 'Running test...'
+                sh 'docker compose up webapp'
+                echo 'Cleaning up images...'
+            }
+        }
+
+        stage('API Test') {
+            steps {
+                echo 'Building test...'
+                sh 'docker compose build webapp --build-arg="ENV_VALUE=DEV" webapp'
+                echo 'Starting webapp in dev'
+                sh 'docker compose up webapp -d'
+                sh 'docker exec webapp cp /env/.env /app'
+                echo 'Running test...'
+                sh 'docker exec webapp apt-get update'
+                sh 'docker exec webapp apt-get install libgtk2.0-0 libgtk-3-0 libgbm-dev libnotify-dev libnss3 libxss1 libasound2 libxtst6 xauth xvfb -y'
+                script {
+                    try {
+                        echo 'Running test...'
+                        sh 'docker exec webapp yarn cypress:run'
+                    } catch (error) {
+                        echo "First test failed, retying again..."
+                        sh 'docker exec webapp yarn cypress:run'
+                    }
+                    finally {
+                        echo 'Stopping webapp in dev'
+                        sh 'docker compose down webapp'
+                    }
+                }
+                echo 'Cleaning up images...'
+                sh 'docker system prune -a -f'
+            }
+        }
+
+        stage('Build') {
+            steps {
+                echo 'Building...'
+                sh 'docker compose build webapp'
+            }
+        }
+        
+        stage('OWASP Dependency Check') {
+            steps {
+                echo 'OWASP Dependency Check Running...'
+                dependencyCheck additionalArguments: ''' 
+                    -o './'
+                    -s './'
+                    -f 'ALL' 
+                    --prettyPrint''', odcInstallation: 'OWASP Dependency-Check Vulnerabilities'
+        
+                dependencyCheckPublisher pattern: 'dependency-check-report.xml'
+            }
+        }
+          
+        stage('Deploy') {
+            steps {
+                echo 'Deploying...'
+                sh 'docker compose up webapp -d'
+                sh 'docker exec webapp cp /env/.env /app'
+                sh 'docker exec webapp yarn prisma db push'
+            }
+        }
+    }
+}
